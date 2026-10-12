@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 阶段 13（2026-10-10）：无障碍服务的**能力声明** ✓（被 AndroidManifest 里
+     PetShotA11y 的 <meta-data android:name="android.accessibilityservice"> 指到 ✓）。
+
+     ⚠️ `canTakeScreenshot="true"` 是**这个方案的命根子** ✗ ——
+     少了它 `takeScreenshot()` 直接回 ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS ✓。
+     它需要 API 30（安卓 11）✓ —— 更低的机器上这条属性会被忽略 ✓，
+     那边 `PetShotA11y.isReady()` 本来就是 false ✓，自动回退 MediaProjection ✓。
+
+     ⚠️⚠️ 属性名是**单数** `canTakeScreenshot` ✗（2026-10-10 第一次导出就栽在这儿 ✓：
+       写成 `canTakeScreenshots`（复数 ✓）→ gradle 直接
+       `AAPT: error: attribute android:canTakeScreenshots not found` ✗ 整包编不出来 ✓。
+       查法：`javap -classpath <android-36>\android.jar android.R$attr | findstr creenshot` ✓
+       —— 里面只有 `canTakeScreenshot` 这一个 ✓）
+     ⚠️ `android:isAccessibilityTool` 我们**故意不设** ✗（默认 false ✓）：
+       它是给"真的为无障碍做事的服务"用的标记 ✓，我们只是借它截一张屏 ✓ ——
+       冒充成 true 是撒谎 ✓（系统会因此少一句提示 ✓，但那不是我们该拿的 ✓）。
+
+     别的一律关到底 ✓：只要窗口状态这一种事件（够系统把服务绑住 ✓）、
+     一个泛化的反馈类型 ✓、只要"能截一张"这一个能力 ✓ —— 权限面越小越让人放心 ✓ -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canTakeScreenshot="true"
+    android:description="@string/pet_a11y_desc"
+    android:notificationTimeout="100" />

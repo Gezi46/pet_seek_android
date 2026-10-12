@@ -1,0 +1,606 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Gezi46
+#
+## 桌宠的右键菜单：按功能分类的多级菜单 + AI 服务设置面板
+##
+## 为什么改成运行时搭：
+##   原来菜单写在 pet.tscn 里（item_N 和 id 一一对应），条目一多就既没法分组、
+##   也没法加子菜单。现在整棵菜单在这里生成 —— 分类就是子菜单，加功能只动这一个文件，
+##   场景里只留一个空的 PopupMenu 节点。
+##
+## 分工：
+##   本模块只管「菜单长什么样」：分组、条目、勾选状态、AI 设置面板；
+##   点了之后**干什么**仍然由主脚本的 _on_menu_id(id) 决定（通过 action 信号转过去）。
+##
+## 用法：
+##   var menu := PetMenu.new()
+##   menu.setup($UI, $UI/Menu, _cjk_font)
+##   menu.action.connect(_on_menu_id)
+##   menu.ai_saved.connect(_on_ai_settings_saved)
+
+extends RefCounted
+
+## 某个功能被点了。id 沿用主脚本原来的编号，新增的往后排
+signal action(id: int)
+## AI 设置面板点了保存（url / key / model）
+signal ai_saved(settings: Dictionary)
+## AI 设置面板关掉了（主脚本要把键盘焦点还回去）
+signal ai_panel_closed()
+## 改名面板点了保存。宿主接过去写进人设并落盘（2026-10-04 用户要求"菜单里能随意命名"）
+signal name_saved(new_name: String)
+
+## 面板零件的出处（卡片 / 标签 / 输入框都从这儿来，和设置面板共用一套长相）
+const PetUi := preload("res://scripts/ui/pet_ui.gd")
+
+# ------------------------------------------------------------------ 动作 id
+# 下面这些必须和主脚本 _on_menu_id 的分支一一对应
+
+const ID_PET := 0
+const ID_FEED := 1
+const ID_SLEEP := 2
+const ID_JUMP := 3
+## 4~6 退役：原来是小 / 中 / 大（缩放三个条目）。设置面板「窗口与操作 → 大小」是同一个值，
+## 也是同一套三选一 —— 一码事不留两套 UI
+const ID_TOGGLE_TOP := 7
+const ID_TALK_LOCAL := 8
+const ID_HOME_HERE := 9
+const ID_HOME_DEFAULT := 10
+const ID_QUIT := 11
+const ID_CHAT := 12
+const ID_ASK := 13
+const ID_PEEK_NOW := 14
+const ID_CAMERA_NOW := 15
+## 16 退役：原来是「主动说话」的快捷勾。设置面板「说话 → 主动说话」是同一个开关，
+## 2026-10-05 一起归位了 —— 她太吵就去面板里关，那儿顺带还能调频率
+## 17 / 18 退役：原来叫「定时偷看屏幕」「定时看摄像头」——
+## 和设置面板里的「说话 → 定时偷看屏幕 / 定时看摄像头」是同一个开关，一码事不留两套 UI。
+## 「现在就看一眼」那两项（ID_PEEK_NOW / ID_CAMERA_NOW）留着，那是动作不是选项
+## 打开 AI 服务设置（后端地址 / 密钥 / 模型）
+const ID_AI_SETTINGS := 19
+## 立刻重新探一次 AI 服务（改完地址、或服务刚起来时用）
+const ID_AI_RECONNECT := 20
+## 21~24 退役：开机自启动 / 隐藏任务栏图标 / 全屏时保持安静 / 托盘图标 ——
+## 这四个在设置面板「开机与系统」里有**一模一样的四个勾**（连说明都是同一份）。
+## 删掉之后那个子菜单整个没了，只把「自启动：…」那一行状态挪到了根菜单
+## 25~28 退役：原来叫「主动说话的频率」四档。设置面板的「说话 → 主动说话的频率」
+## 是**一模一样**的四档（连文案都一样），留着只是让人多一个地方改
+## 打开设置面板（人设 / 记忆 / 说话 / 窗口 / 系统，见 scripts/pet_settings.gd）
+const ID_SETTINGS := 29
+## 让她用本机 dsh（DeepSeek Harness）干活：开关 / 派活（见 scripts/pet_harness.gd）
+const ID_HARNESS := 30
+const ID_HARNESS_TASK := 31
+## 打开工作台（派活 / 看原文 / 重启她，见 scripts/pet_workbench.gd）
+const ID_WORKBENCH := 32
+## 33 退役：原来叫「只在小范围走动」。设置面板里是同一个键，而且**半径只能在那边调** ——
+## 菜单那个勾等于把一半的功能放在另一个地方，不如都归面板
+## 主动说话时先瞥一眼屏幕（2026-09-27 用户要求：绑定 + 概率性 + 默认开）
+const ID_PROACTIVE_PEEK := 34
+## 哄哄她：她"连着被冷落 4 次、生气不主动说话"时用它回来（2026-09-27 用户要求）
+const ID_SOOTHE := 35
+## 高峰时段少说话：晚上 AI 高峰时把主动开口间隔 ×5（2026-09-29 用户要求）
+const ID_PEAK_REDUCE := 36
+## 37 是**退役**的号：它原来叫「透明模式（点不到我）」，2026-10-05 整块删掉了。
+## 留着这个空号是为了**以后别再复用** —— 翻旧提交看到 id 37 时，一眼就知道那是个
+## 已经不存在的东西，而不是"某个我还没找到的功能"
+## 38~45 退役：原来叫「回复按钮出现频率」和「移动频率」，各四档。
+## 设置面板里这两个是**连续滑杆**（quick_chance / move_chance），比四档细 ——
+## 那两套 UI 表达的是同一件事，删掉粗的那套
+## 「给她起个名字…」—— 根菜单一级，点开就是一个小输入框（2026-10-04 用户要求：
+## "改成可以在菜单随意命名"）。名字本来就在设置面板里有，但要翻两层再滚到那一项，
+## 改名这种"顺手就干"的事不该这么绕
+const ID_RENAME := 46
+## 「导出日志…」：把运行日志 + 系统信息收成一份丢到桌面（见 scripts/sys/pet_log.gd）。
+## 放一级菜单是**故意的**：她出问题时，用户正着急，不该再翻两层子菜单去找
+const ID_EXPORT_LOG := 47
+## 自启动状态那一行：只用来显示，点了什么也不做。
+## 给个大编号躲开真实动作的号段 —— 万一哪天漏了拦截，也不会误触发别的功能
+const ID_AUTOSTART_STATUS := 900
+## AI 服务状态那一行（连着没连着）。离线时她进"假死"，这行就是让人看出"她为什么这么安静"
+const ID_AI_STATUS := 901
+
+## 服务来源预设：选一下就把地址和两个模型填好，省得手抄。
+## 两个都是 OpenAI 兼容协议，桌宠只换地址/密钥/模型名。
+const PROVIDERS: Array = [
+	{
+		"name": "官方 API（付费 key）",
+		"url": "https://api.deepseek.com",
+		"model": "deepseek-flash",
+		"vision": "deepseek-v4-flash-vision-exp",
+	},
+	{
+		"name": "本地网页版（deepseek-web-api）",
+		"url": "http://127.0.0.1:8520/v1",
+		"model": "deepseek-chat",
+		"vision": "",
+	},
+]
+
+var _menu: PopupMenu = null
+var _font: Font = null
+## 勾选项 id -> 它所在的子菜单（找回去才能改勾选状态）
+var _check_owner: Dictionary = {}
+## 状态行的 id -> [菜单, 下标]。要反复改文本，所以把位置记下来（见 _status_row）
+var _status_rows: Dictionary = {}
+
+# AI 设置面板
+var _panel: PanelContainer = null
+var _provider_btn: OptionButton = null
+var _url_edit: LineEdit = null
+var _key_edit: LineEdit = null
+## 密钥那一行的「显示 / 隐藏」按钮
+var _key_eye: Button = null
+var _model_edit: LineEdit = null
+var _vision_edit: LineEdit = null
+var _status: Label = null
+var _settings: Dictionary = {
+	"url": "", "key": "", "model": "", "vision_url": "", "vision_model": "",
+}
+
+# 改名面板（「给她起个名字…」）
+var _name_panel: PanelContainer = null
+var _name_edit: LineEdit = null
+
+# ------------------------------------------------------------------ 搭建
+
+func setup(ui_layer: CanvasLayer, menu: PopupMenu, font: Font) -> void:
+	_menu = menu
+	_font = font
+	# 根菜单也要连！子菜单是 _submenu() 里各自连的，而根菜单上的条目
+	# （「设置…」「退出」）走的是它自己这条信号 —— 漏了这一步，点「退出」什么都不会
+	# 发生，而且界面上完全看不出问题：菜单正常弹、条目正常高亮，就是点了没反应。
+	if not _menu.id_pressed.is_connected(_on_item):
+		_menu.id_pressed.connect(_on_item)
+	_build_menu()
+	_build_ai_panel(ui_layer)
+	_build_name_panel(ui_layer)
+
+## 菜单条目被点了：统一转成 action 信号，由主脚本决定干什么
+func _on_item(id: int) -> void:
+	action.emit(id)
+
+## 整棵菜单：一级就是分类。改了分组只动这里
+func _build_menu() -> void:
+	# 场景里那套 item_N 是旧版写死的菜单，这里整棵重建 —— clear() 掉它
+	_menu.clear()
+	_apply_menu_font(_menu)
+
+	var play := _submenu("互动")
+	_item(play, "摸摸头", ID_PET)
+	_item(play, "喂点东西", ID_FEED)
+	_item(play, "睡觉 / 起床", ID_SLEEP)
+	_item(play, "跳一下", ID_JUMP)
+	_item(play, "说点什么", ID_TALK_LOCAL)
+	_item(play, "哄哄她", ID_SOOTHE)
+	_menu.add_submenu_node_item("互动", play)
+
+	var where := _submenu("位置与窗口")
+	_item(where, "记住当前位置", ID_HOME_HERE)
+	_item(where, "回到右下角", ID_HOME_DEFAULT)
+	where.add_separator()
+	_item(where, "窗口置顶", ID_TOGGLE_TOP)
+	_menu.add_submenu_node_item("位置与窗口", where)
+
+	var ai := _submenu("聊天与 AI")
+	_item(ai, "打开聊天框", ID_CHAT)
+	_item(ai, "让她想个话题", ID_ASK)
+	ai.add_separator()
+	_item(ai, "偷看屏幕看看", ID_PEEK_NOW)
+	_item(ai, "看一眼摄像头", ID_CAMERA_NOW)
+	ai.add_separator()
+	_toggle(ai, "高峰时段少说话", ID_PEAK_REDUCE,
+		"DeepSeek 官方高峰（工作日 9~12 点、14~18 点）把主动开口间隔拉长 5 倍 —— 少撞限流")
+	_toggle(ai, "主动说话时先看一眼屏幕", ID_PROACTIVE_PEEK,
+		"按概率先抓一张屏幕，她就着画面（和前台窗口）找话题 —— 默认开")
+	ai.add_separator()
+	# 本机 dsh（DeepSeek Harness）：让她把简单活派出去干
+	_toggle(ai, "让她用 dsh 干活", ID_HARNESS,
+		"把简单的活交给本机的 DeepSeek Harness；推理档按任务大小自动挑（off / low / high / max）")
+	_item(ai, "给她派个活…", ID_HARNESS_TASK, "打开聊天框，写「干活：要她做的事」")
+	ai.add_separator()
+	# 这一行是状态：连着 = 正常；连不上 = 她进"假死"（只剩基础功能）
+	_status_row(ai, ID_AI_STATUS, "AI 服务：…")
+	_item(ai, "AI 服务设置…", ID_AI_SETTINGS)
+	_item(ai, "重新连接 AI 服务", ID_AI_RECONNECT)
+	_menu.add_submenu_node_item("聊天与 AI", ai)
+
+	_menu.add_separator()
+	# 「开机与系统」那个子菜单整个没了（四个开关都归设置面板，见 id 区 21~24 那条说明）。
+	# 只把这一行**状态**留下来放一级：它是去注册表读出来的真实情况，
+	# 和"我们记着的开关"不一定一致（可能被启动项管理工具关掉）—— 值得一眼看到
+	_status_row(_menu, ID_AUTOSTART_STATUS, "自启动：…")
+	# 工作台放一级：它是"给她派活、看她改了什么"的地方，主要用来让她给自己升级
+	_item(_menu, "工作台…", ID_WORKBENCH, "把活交给本机的 dsh 干：任务、工作目录、结果原文、" \
+		+ "干完一键重启她")
+	_item(_menu, "给她起个名字…", ID_RENAME, "改完立刻生效（写进人设提示词）；留空就回到默认的「小蓝」")
+	_item(_menu, "设置…", ID_SETTINGS)
+	_menu.add_separator()
+	_item(_menu, "导出日志…", ID_EXPORT_LOG,
+		"把她这次的运行日志和系统信息收成一份放桌面 —— 她不对劲时把这个发给我")
+	_item(_menu, "退出", ID_QUIT)
+
+## 每个子菜单单独连一次 id_pressed —— 点了子项也要转成 action
+func _submenu(title: String) -> PopupMenu:
+	var m := PopupMenu.new()
+	m.name = "Sub" + title
+	_apply_menu_font(m)
+	m.id_pressed.connect(_on_item)
+	# 弹出时优先挪到父菜单左侧（见 _mirror_submenu）
+	m.about_to_popup.connect(_mirror_submenu.bind(m))
+	_menu.add_child(m)
+	return m
+
+## 子菜单弹出时，**优先把它挪到父菜单左侧**（2026-10-03 用户要求"子菜单优先向左侧展示"）。
+##
+## 为什么不改引擎的方向：PopupMenu 的方向由内部的 is_layout_rtl() 决定（LTR 默认向右，
+## 只有右侧放不下才镜像到左）。而那个值在 Godot 4.7 里只能靠项目设置
+## `internationalization/rendering/root_node_layout_direction` —— **实测设成 3（RTL）也不生效**
+## （Label / PopupMenu 的 is_layout_rtl() 都还是 false），何况它一旦生效会把整个 UI
+## 的左右都镜像一遍。所以改成弹出时自己摆位置：只动菜单，别的都不碰。
+##
+## 左边放不下（会跑出屏幕）就原样不动，让引擎按老规矩往右开。
+##
+## 时机讲究：引擎是在 `popup()` 内部、**发完 about_to_popup 之后**才把位置写上的 ——
+## 实测直接在信号里改会被随后的覆盖掉（子菜单照旧停在父菜单右边）。所以延到本帧末再挪。
+func _mirror_submenu(sub: PopupMenu) -> void:
+	_move_submenu_left.call_deferred(sub)
+
+func _move_submenu_left(sub: PopupMenu) -> void:
+	if not sub.visible:
+		return
+	var parent_menu := sub.get_parent() as PopupMenu
+	if parent_menu == null:
+		return
+	var target_x: int = parent_menu.position.x - sub.size.x
+	var scr := DisplayServer.screen_get_usable_rect(DisplayServer.window_get_current_screen())
+	if target_x < scr.position.x:
+		return
+	sub.position = Vector2i(target_x, sub.position.y)
+
+## 嵌在别的子菜单里的子菜单。
+## **不能用 _submenu()** —— 它会把新菜单挂到根 _menu 上，再想让上层当爹就会报
+## "The submenu ... already has a different parent"（add_submenu_node_item 不会帮你换爹）。
+## 这个错误在冒烟测试里才现形：菜单照样弹得出来，只是那一条不生效。
+func _submenu_of(parent: PopupMenu, title: String) -> PopupMenu:
+	var m := PopupMenu.new()
+	m.name = "Sub" + title
+	_apply_menu_font(m)
+	m.id_pressed.connect(_on_item)
+	# 嵌套的这几层同样优先往左（见 _mirror_submenu）
+	m.about_to_popup.connect(_mirror_submenu.bind(m))
+	parent.add_child(m)
+	return m
+
+func _item(m: PopupMenu, label: String, id: int, tip: String = "") -> void:
+	m.add_item(label, id)
+	if tip != "":
+		var idx := m.get_item_index(id)
+		if idx >= 0:
+			m.set_item_tooltip(idx, tip)
+
+func _toggle(m: PopupMenu, label: String, id: int, tip: String = "") -> void:
+	_item(m, label, id, tip)
+	var idx := m.get_item_index(id)
+	if idx >= 0:
+		# 注意方法名是 set_item_as_checkable（不是 set_item_checkable，
+		# 那个名字在 Godot 4 里没有），读回来的是 is_item_checkable
+		m.set_item_as_checkable(idx, true)
+	_check_owner[id] = m
+
+## "让她用 dsh 干活"那个勾
+func sync_harness(on: bool) -> void:
+	_set_checked(ID_HARNESS, on)
+
+## 一行纯显示的状态文字（灰色、点不动）。自启动和 AI 服务各用一行。
+## 单独一个函数是因为它的下标记下来之后要反复改文本。
+##
+## 名字别叫 _status —— 本模块里 `_status` 已经是 AI 面板那个 Label 了，
+## 同名会让整个脚本解析失败（报的是 "Could not preload"，不指出重名，很难猜）。
+func _status_row(m: PopupMenu, id: int, text: String = "") -> void:
+	m.add_item(text, id)
+	var idx := m.get_item_index(id)
+	if idx >= 0:
+		m.set_item_disabled(idx, true)
+		_status_rows[id] = [m, idx]
+
+func _set_status_row(id: int, text: String) -> void:
+	var row: Array = _status_rows.get(id, [])
+	if row.is_empty():
+		return
+	(row[0] as PopupMenu).set_item_text(int(row[1]), text)
+
+## AI 服务那行。**离线时她会进"假死"**（主动说话 / 生闷气 / 偷看 / 记忆抽取全停，
+## 只留基础功能），这行就是让人一眼看出"她为什么这么安静"
+func set_ai_status(text: String) -> void:
+	_set_status_row(ID_AI_STATUS, "AI 服务：%s" % text)
+
+## 给 Control 套中文字体这一步挪去了 pet_ui.gd（和设置面板共用一套）。
+## 注意 PopupMenu **不是 Control**（它是 Popup → Window），走不了那条路 ——
+## 菜单得用下面的 _apply_menu_font，类型写错会直接编译失败。
+
+## 菜单得用 Theme 挂字体：PopupMenu 是 Window，没有 add_theme_font_override，
+## 但它有 theme 属性，给 "PopupMenu" 类型设上 font 即可。
+## （项目里没配全局中文字体，不挂的话菜单项的中文会掉字。）
+func _apply_menu_font(m: PopupMenu) -> void:
+	if _font == null:
+		return
+	var th := Theme.new()
+	th.set_font("font", "PopupMenu", _font)
+	m.theme = th
+	if OS.is_debug_build():
+		print("[菜单] %s 字体已挂：%s" % [
+			m.name, m.theme != null and m.theme.has_font("font", "PopupMenu")])
+
+# ------------------------------------------------------------------ 勾选同步
+
+## PopupMenu 的勾选状态是它自己存的，和我们的运行时开关是两套东西，
+## 所以每次改完都要同步一次 —— 否则菜单里显示的和实际生效的会对不上
+## （尤其是从配置文件读出来之后）。
+##
+## 2026-10-05 之后菜单里只剩**三个勾**（高峰时段 / 主动说话时先看一眼屏幕 / 让她用 dsh），
+## 原来那个"一次同步四个参数"的 sync_toggles 就拆成了各自一个
+func sync_proactive_peek(on: bool) -> void:
+	_set_checked(ID_PROACTIVE_PEEK, on)
+
+## 「高峰时段少说话」的勾选同步（和主动说话那几个并列）
+func sync_peak_reduce(on: bool) -> void:
+	_set_checked(ID_PEAK_REDUCE, on)
+
+
+## 更新自启动状态那一行。内容由 pet_shell.gd 给（它知道注册表的真实情况）
+func set_autostart_status(text: String) -> void:
+	_set_status_row(ID_AUTOSTART_STATUS, "自启动：%s" % text)
+
+func _set_checked(id: int, on: bool) -> void:
+	var m: PopupMenu = _check_owner.get(id, null)
+	if m == null:
+		return
+	var idx := m.get_item_index(id)
+	if idx >= 0:
+		m.set_item_checked(idx, on)
+
+# ------------------------------------------------------------------ 改名面板
+
+## 「给她起个名字…」。和 AI 面板同一个套路（挂 CanvasLayer、共用 PetUi 那套零件），
+## 但只有一格输入 + 两个按钮 —— 用户要的是"顺手改个名"，不该逼他翻两层菜单再滚到那一项。
+##
+## 为什么不弹独立窗口：项目里 embed_subwindows=false，弹独立窗会变成另一个 OS 窗口，
+## 而桌宠平时是 no_focus 的，键盘焦点很难处理（和 AI 面板同一个理由）。
+func _build_name_panel(layer: CanvasLayer) -> void:
+	if layer == null:
+		return
+	_name_panel = PetUi.panel()
+	_name_panel.name = "RenamePet"
+	_name_panel.visible = false
+	# 居中的小卡片：就一格输入，占满整窗会显得很突兀。
+	# 宽度得**跟窗口走**：缩放档调到 75% 时窗口只有 ~248 宽，写死 260 就伸出去了
+	# （AI 面板就是这么坏的）。200 在小档下也放得下，还保住了"小卡片"的样子
+	_name_panel.set_anchors_preset(Control.PRESET_CENTER)
+	_name_panel.custom_minimum_size = Vector2(200, 0)
+	# 只设锚点不设偏移的话，左上角会落在窗口中心再往右下撑 —— 「就叫这个」按钮
+	# 就跑到窗外了。grow BOTH 才是真居中
+	_name_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_name_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	layer.add_child(_name_panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 5)
+	_name_panel.add_child(vb)
+
+	vb.add_child(PetUi.label("她叫什么？", _font, 12))
+	_name_edit = PetUi.edit("比如：小蓝", _font)
+	# 回车 = 按保存。敲完名字顺手回车是最自然的动作，不该逼人再去点按钮
+	_name_edit.text_submitted.connect(func(_t: String) -> void: _on_name_ok())
+	vb.add_child(_name_edit)
+	# 这句偏长，**必须能换行**（hint 自带 autowrap）—— 用 label 的话它的最小宽度
+	# 会把卡片顶到 250+，在小窗口下又伸出去了
+	vb.add_child(PetUi.hint("写进人设提示词；留空 = 回到默认的「小蓝」", _font))
+
+	var row := PetUi.hbox(6)
+	row.alignment = BoxContainer.ALIGNMENT_END
+	var cancel := PetUi.button("算了", _font)
+	cancel.pressed.connect(close_name_panel)
+	row.add_child(cancel)
+	var save := PetUi.button("就叫这个", _font)
+	save.pressed.connect(_on_name_ok)
+	row.add_child(save)
+	vb.add_child(row)
+
+## 打开。当前名字由**宿主**给 —— 它才是"当前值"的出处（和设置面板一个道理）
+func open_name_panel(current_name: String) -> void:
+	if _name_panel == null:
+		return
+	_name_edit.text = current_name
+	_name_panel.visible = true
+	_name_edit.grab_focus()
+	_name_edit.select_all()
+
+func name_panel_visible() -> bool:
+	return _name_panel != null and _name_panel.visible
+
+func close_name_panel() -> void:
+	if _name_panel == null or not _name_panel.visible:
+		return
+	_name_panel.visible = false
+
+func point_in_name_panel(pos: Vector2) -> bool:
+	if _name_panel == null or not _name_panel.visible:
+		return false
+	return _name_panel.get_global_rect().has_point(pos)
+
+## 点了「就叫这个」（或回车）。空串照发 —— 宿主按"回到默认"处理
+func _on_name_ok() -> void:
+	var n := _name_edit.text.strip_edges()
+	close_name_panel()
+	name_saved.emit(n)
+
+# ------------------------------------------------------------------ AI 设置面板
+
+## 面板挂在 UI 这个 CanvasLayer 底下（和聊天框一个套路），
+## 不用独立窗口：项目里 embed_subwindows=false，弹独立窗会变成另一个 OS 窗口，
+## 而桌宠平时是 no_focus 的，键盘焦点会很难处理。
+func _build_ai_panel(layer: CanvasLayer) -> void:
+	if layer == null:
+		return
+	_panel = PetUi.panel()
+	_panel.name = "AiSettings"
+	_panel.visible = false
+	# 占满整窗，**不要写固定宽度**（和设置面板同一个理由，那边的注释早就写明了：
+	# "窗口本身只有 330x470，而且缩放档还会把它变小 —— 固定尺寸在小档下会溢出到窗外"）。
+	# 原来这里是 custom_minimum_size = Vector2(300, 0)：缩放档调到 75% 时窗口只剩
+	# ~248 宽，面板永远比窗口宽 —— 右半截看不见、「保存」按钮在窗外点不到
+	# （2026-10-04 用户报的"显示不完全、没法保存密钥"就是这个）。
+	_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_panel.offset_left = 4.0
+	_panel.offset_top = 4.0
+	_panel.offset_right = -4.0
+	_panel.offset_bottom = -4.0
+	layer.add_child(_panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 5)
+	_panel.add_child(vb)
+
+	vb.add_child(PetUi.label("AI 服务", _font, 13, PetUi.TEXT_MAIN))
+
+	# 五格输入在小窗口里会放不下 —— 中间这段可滚动，标题和按钮钉住不动
+	# （和设置面板同一套布局）。横向滚动关掉：横向只许换行，不许把面板撑宽
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(scroll)
+
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 5)
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(body)
+
+	# 来源下拉只是个"填表助手"：选完把地址和两个模型填进去，之后还能手改
+	_provider_btn = OptionButton.new()
+	PetUi.apply_font(_provider_btn, _font)
+	for p in PROVIDERS:
+		_provider_btn.add_item(String(p["name"]))
+	_provider_btn.item_selected.connect(_on_provider_picked)
+	body.add_child(_provider_btn)
+
+	body.add_child(PetUi.label("后端地址", _font, 11, PetUi.TEXT_SUB))
+	_url_edit = PetUi.edit("https://api.deepseek.com 或 http://127.0.0.1:8520/v1", _font)
+	body.add_child(_url_edit)
+
+	body.add_child(PetUi.label("访问密钥", _font, 11, PetUi.TEXT_SUB))
+	# 密钥**默认遮起来**（2026-10-04 用户要求）：这个面板就摊在桌面上，截图 / 录屏 /
+	# 旁边有人看一眼，明文就直接泄了 —— 而它恰恰是这个项目最该防的东西。
+	# 要核对自己填了什么，点右边那个「显示」。secret 只影响显示，text 一直是真值
+	var key_row := PetUi.hbox(6)
+	_key_edit = PetUi.edit("官方 API 填 sk- 开头的 key；本地网页版填管理页第 ② 栏那串", _font, true)
+	_key_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	key_row.add_child(_key_edit)
+	_key_eye = PetUi.button("显示", _font)
+	_key_eye.tooltip_text = "点一下看明文（截图前记得切回来）"
+	_key_eye.pressed.connect(_toggle_key_visible)
+	key_row.add_child(_key_eye)
+	body.add_child(key_row)
+
+	body.add_child(PetUi.label("文本模型（聊天用）", _font, 11, PetUi.TEXT_SUB))
+	_model_edit = PetUi.edit("deepseek-flash", _font)
+	body.add_child(_model_edit)
+
+	body.add_child(PetUi.label("视觉模型（偷看屏幕 / 看摄像头用）", _font, 11, PetUi.TEXT_SUB))
+	_vision_edit = PetUi.edit("deepseek-v4-flash-vision-exp（留空 = 关掉看图）", _font)
+	body.add_child(_vision_edit)
+
+	# 状态那行**必须能换行**：它装的是 desktop_pet.gd 里"连不上 %s —— 官方 API 要能
+	# 上网；本地网页版要先双击它的 start.cmd"这种整句。用 label（不带 autowrap）的话，
+	# 它的最小宽度就是整句的宽度（~500px），会把面板撑得比窗口还宽。
+	# PetUi.hint 自带 autowrap，所以状态一律走它
+	_status = PetUi.hint("", _font)
+	_status.add_theme_color_override("font_color", PetUi.TEXT_WARN)
+	vb.add_child(_status)
+
+	var row := PetUi.hbox(6)
+	row.alignment = BoxContainer.ALIGNMENT_END
+	var cancel := PetUi.button("取消", _font)
+	cancel.pressed.connect(func() -> void: close_ai_panel())
+	row.add_child(cancel)
+	var save := PetUi.button("保存", _font)
+	save.pressed.connect(_on_save)
+	row.add_child(save)
+	vb.add_child(row)
+
+func ai_settings() -> Dictionary:
+	return _settings.duplicate()
+
+func set_ai_settings(d: Dictionary) -> void:
+	_settings = {
+		"url": String(d.get("url", "")),
+		"key": String(d.get("key", "")),
+		"model": String(d.get("model", "")),
+		"vision_url": String(d.get("vision_url", "")),
+		"vision_model": String(d.get("vision_model", "")),
+	}
+
+## 密钥那一行的「显示 / 隐藏」。
+## `secret` 只影响显示，`text` 始终是真值 —— 所以保存、复制都不受影响
+func _toggle_key_visible() -> void:
+	if _key_edit == null or _key_eye == null:
+		return
+	_key_edit.secret = not _key_edit.secret
+	_key_eye.text = "隐藏" if not _key_edit.secret else "显示"
+
+## 选来源 = 把地址和两个模型填进表单（不落盘，要按保存才行）
+func _on_provider_picked(idx: int) -> void:
+	if idx < 0 or idx >= PROVIDERS.size():
+		return
+	var p: Dictionary = PROVIDERS[idx]
+	_url_edit.text = String(p["url"])
+	_model_edit.text = String(p["model"])
+	_vision_edit.text = String(p["vision"])
+
+## 面板打开时填当前值。status 用来把"连不上/令牌过期"这类原因直接写给人看
+func open_ai_panel(status: String = "") -> void:
+	if _panel == null:
+		return
+	_url_edit.text = String(_settings.get("url", ""))
+	_key_edit.text = String(_settings.get("key", ""))
+	# 每次打开都回到"遮起来"。上次看过的明文不该留在屏幕上
+	_key_edit.secret = true
+	if _key_eye != null:
+		_key_eye.text = "显示"
+	_model_edit.text = String(_settings.get("model", ""))
+	_vision_edit.text = String(_settings.get("vision_model", ""))
+	# 来源下拉只是助手：按地址反推当前选的是哪个，认不出来就不选
+	var sel := -1
+	for i in PROVIDERS.size():
+		if String(PROVIDERS[i]["url"]) == String(_settings.get("url", "")):
+			sel = i
+			break
+	_provider_btn.selected = sel
+	_status.text = status
+	_panel.visible = true
+	_url_edit.grab_focus()
+
+func close_ai_panel() -> void:
+	if _panel == null or not _panel.visible:
+		return
+	_panel.visible = false
+	ai_panel_closed.emit()
+
+func ai_panel_visible() -> bool:
+	return _panel != null and _panel.visible
+
+func point_in_ai_panel(pos: Vector2) -> bool:
+	if _panel == null or not _panel.visible:
+		return false
+	return _panel.get_global_rect().has_point(pos)
+
+func _on_save() -> void:
+	var url := _url_edit.text.strip_edges()
+	_settings = {
+		"url": url,
+		"key": _key_edit.text.strip_edges(),
+		"model": _model_edit.text.strip_edges(),
+		# 视觉默认跟文本同一个服务地址：官方 API 一个 key 同时能调两个模型
+		"vision_url": url,
+		"vision_model": _vision_edit.text.strip_edges(),
+	}
+	close_ai_panel()
+	ai_saved.emit(_settings.duplicate())

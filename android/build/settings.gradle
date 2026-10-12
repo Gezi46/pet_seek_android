@@ -1,0 +1,23 @@
+// This is the root directory of the Godot Android gradle build.
+pluginManagement {
+    apply from: 'config.gradle'
+
+    plugins {
+        id 'com.android.application' version versions.androidGradlePlugin
+        id 'org.jetbrains.kotlin.android' version versions.kotlinVersion
+    }
+    repositories {
+        // 2026-10-09（阶段 5c）：国内镜像放**最前面**（google() = dl.google.com 在国内拿不到 ✗；
+        // 阿里云这三条分别对应 google / central / gradle 插件库 ✓），原仓库留着当兜底 ✓
+        maven { url "https://maven.aliyun.com/repository/google" }
+        maven { url "https://maven.aliyun.com/repository/public" }
+        maven { url "https://maven.aliyun.com/repository/gradle-plugin" }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+        maven { url "https://plugins.gradle.org/m2/" }
+        maven { url "https://central.sonatype.com/repository/maven-snapshots/"}
+    }
+}
+
+include ':assetPackInstallTime'

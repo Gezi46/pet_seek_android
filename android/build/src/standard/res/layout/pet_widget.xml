@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 阶段⑤（2026-10-11）：桌面小组件长什么样 ✓
+     ⚠️ AppWidget 的 RemoteViews **只认这几样**（LinearLayout / TextView / ImageView / Button 等 ✓）——
+     自定义 View、Fragment 一律不行 ✗（ RemoteViews 是跨进程"照样子画" ✓）。
+     配色跟悬浮球面板一致 ✓（深色圆角板 + 浅字 ✓）：#1A2430 底、#F2F6FF 字 ✓。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/pet_widget_bg"
+    android:padding="12dp">
+
+    <!-- 顶上这小行是"谁在说话" ✓（卡片上没有她的脸 ✗ —— AppWidget 放不了动图/视频 ✓） -->
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/pet_widget_title"
+        android:textSize="12sp"
+        android:textColor="#FF8AB4FF"
+        android:maxLines="1" />
+
+    <!-- 她最近那句话 ✓ 最多三行，多了截断 ✗（卡片是横向扁的 ✓） -->
+    <TextView
+        android:id="@+id/widget_line"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:textSize="14sp"
+        android:textColor="#FFF2F6FF"
+        android:maxLines="3"
+        android:ellipsize="end" />
+
+    <!-- "多久以前" ✓ —— 由 PetWidget.relText 算 ✓（空串就什么也不显示 ✓） -->
+    <TextView
+        android:id="@+id/widget_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="right"
+        android:textSize="11sp"
+        android:textColor="#88FFFFFF"
+        android:maxLines="1" />
+</LinearLayout>

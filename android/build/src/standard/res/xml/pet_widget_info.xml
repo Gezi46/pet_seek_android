@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 阶段⑤（2026-10-11）：桌面小组件的"规格单" ✓（系统按这张单子决定
+     桌面网格里给它几格、能不能拉伸、多久自己刷新一次 ✓）
+
+     · updatePeriodMillis=1800000（半小时 ✓）：安卓的**下限**就是 30 分钟 ✓（写更小也白写 ✓）。
+       真正的刷新靠 GDScript 每听她说一句就推一次 ✓（PetBridge.refreshWidget ✓）；
+       这个周期只是兜底 —— 让"多久以前"这句话自己也会变新 ✓。
+     · minWidth/minHeight：老系统按 dp 算格子 ✓；targetCellWidth/Height 是 API 31+ 的算法 ✓
+       （老系统直接忽略这两个属性 ✓，写了不亏 ✓）。3×1 格 ≈ 一行卡片，句子三行放得下 ✓。
+     · resizeMode：允许横竖拉伸 ✓（用户嫌矮能拉高 ✓）。
+     · widgetCategory="home_screen"：只出现在桌面/负一屏这类地方 ✓（不进锁屏 ✗）。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="40dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="1"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/pet_widget"
+    android:widgetCategory="home_screen"
+    android:label="@string/pet_widget_label" />

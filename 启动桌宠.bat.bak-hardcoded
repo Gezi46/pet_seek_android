@@ -1,0 +1,62 @@
+@echo off
+rem ============================================================
+rem  Launch the pet, plus its local AI service when it needs one.
+rem
+rem  The pet has two interchangeable AI backends (right-click the
+rem  pet: "Chat & AI" -> "AI service settings..."):
+rem    * official API   https://api.deepseek.com      (paid key, no local service)
+rem    * local web app  http://127.0.0.1:8520/v1      (deepseek-web-api)
+rem  This script reads the pet's own config and only starts the local
+rem  service when that config actually points at it.
+rem
+rem  THREE RULES for this file (each one bit us already):
+rem    1. keep it ASCII-only and CRLF - cmd parses multi-byte text and
+rem       LF endings wrongly and starts running the fragments;
+rem    2. never put a pipe character inside a bat line - cmd reads it as a pipe
+rem       and executes the rest as commands (use foreach, not pipelines);
+rem    3. use "%~dp0." for --path, never "%~dp0" - a trailing \" gets
+rem       treated as an escaped quote and breaks the whole command.
+rem ============================================================
+
+set "GODOT=D:\steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe"
+set "AI_DIR=D:\dsh\deepseek-web-api"
+set "AI_HEALTH=http://127.0.0.1:8520/healthz"
+
+rem ---- does the pet's config ask for the local 8520 service? ----
+rem pet_chat.cfg lives under %APPDATA%\Godot\app_userdata\<project>\ but the
+rem project folder name is Chinese and this file must stay ASCII, so find it
+rem by scanning instead of hardcoding the path. No pipelines (see rule 2).
+powershell -NoProfile -Command "$p=Join-Path $env:APPDATA 'Godot\app_userdata'; $f=''; foreach($d in (Get-ChildItem $p -Directory -EA SilentlyContinue)){ $c=Join-Path $d.FullName 'pet_chat.cfg'; if(Test-Path $c){ $f=$c; break } }; if($f -eq ''){exit 2}; if((Get-Content -Raw $f) -match '127\.0\.0\.1:8520'){exit 0}else{exit 1}"
+if errorlevel 2 goto :local_ai
+if errorlevel 1 goto :official_ai
+goto :local_ai
+
+:official_ai
+echo [AI] config points at the official API - no local service needed.
+goto :launch
+
+:local_ai
+powershell -NoProfile -Command "try{Invoke-WebRequest -Uri '%AI_HEALTH%' -TimeoutSec 2 -UseBasicParsing > $null; exit 0}catch{exit 1}"
+if errorlevel 1 goto :start_ai
+echo [AI] deepseek-web-api is already running.
+goto :launch
+
+:start_ai
+if not exist "%AI_DIR%\start.mjs" (
+	echo [AI] cannot find %AI_DIR%\start.mjs - skipping, the pet falls back to local lines.
+	goto :launch
+)
+echo [AI] starting deepseek-web-api ...
+start "deepseek-web-api" /min /d "%AI_DIR%" cmd /c node start.mjs
+rem wait up to ~24s for it to answer
+powershell -NoProfile -Command "for($i=0;$i -lt 30;$i++){try{Invoke-WebRequest -Uri '%AI_HEALTH%' -TimeoutSec 2 -UseBasicParsing > $null; exit 0}catch{Start-Sleep -Milliseconds 800}}; exit 1"
+if errorlevel 1 (
+	echo [AI] not up within 24s - the pet still starts, but AI chat falls back to local lines.
+	echo [AI] troubleshoot: double-click %AI_DIR%\start.cmd and read the log
+	echo [AI] (most likely the web userToken expired - re-paste it at http://127.0.0.1:8520/admin)
+) else (
+	echo [AI] ready.
+)
+
+:launch
+start "" "%GODOT%" --path "%~dp0."

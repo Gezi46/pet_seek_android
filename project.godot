@@ -1,0 +1,164 @@
+; Engine configuration file.
+;
+; ==============================================================================
+; ⚠️ 这份是**安卓专用工程**（2026-10-08 从 PC 工程复制出来的快照）。
+;
+; 和 PC 工程（C:\Users\han\Documents\桌宠）的关系：
+;   - 代码是**一份拷贝**，不是链接 —— PC 那边改了 .gd，这里要手工搬过来
+;   - 只差三处：① 入口场景换成 scenes/mobile/pet_mobile.tscn
+;               ② 透明那两行关掉（手机不需要 → 默认模板就能导出，不用 Gradle）
+;               ③ 导出预设只剩 Android
+;   - PC 工程里已经把 scenes/mobile/ + scripts/mobile/ 删掉了，那边不再有安卓因素
+; ==============================================================================
+config_version=5
+
+[application]
+
+config/name="PetDeek"
+config/description="PetDeek 手机端：住在手机里的蓝发女仆桌宠（Android / 触摸交互）"
+run/main_scene="res://scenes/mobile/pet_mobile.tscn"
+; 帧率上限：手机屏是 120Hz，而她站着不动也要每帧画一遍。60 是"看着顺"和"别烧电"的折中，
+; 运行时还会按"有没有互动"在 60/30/5 三档之间自己切（见 pet_mobile.gd 的 FPS_ACTIVE 那组常量）
+run/max_fps=60
+config/use_custom_user_dir=true
+; ⚠️ 名字和 PC 那份**故意不同**（2026-10-08）：这样在 Windows 上跑这份工程做调试时，
+; 它写的是自己的目录，不会碰到 PC 那只的真实存档（记忆 / 密钥 / 情绪）。
+; 手机上是应用沙箱，两份本来就不可能互相看见 —— 这条纯粹是为了开发时安全
+config/custom_user_dir_name="Godot/app_userdata/桌宠安卓版"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.png"
+
+[debug]
+
+; 把引擎自己的日志也落盘（user://logs/godot.log）——**导出版里也要**。
+; 手机上没有控制台，出问题时只能靠 adb 把这份日志拉出来看。
+; 桌宠自己那份（user://logs/pet.log）由 scripts/sys/pet_log.gd 写，和这里无关。
+file_logging/enable_file_logging=true
+file_logging/enable_file_logging.pc=true
+
+[display]
+
+window/size/viewport_width=330
+window/size/viewport_height=470
+window/size/borderless=true
+window/size/always_on_top=true
+; ⚠️ 这两行**手机端是关的**（2026-10-08）：
+;   Android 上开逐像素透明就必须切 Gradle 构建，而手机根本不需要透明
+;   （阶段 2 的悬浮窗是原生画的）。关掉 → 默认模板直接能导出。
+;   ⚠️ 反过来在 PC 上**绝不能关**：`per_pixel_transparency/allowed` 还决定
+;   is_window_transparency_available()，关了她那个窗就变成一圈大黑边（踩过）。
+window/size/transparent=false
+window/size/no_focus=true
+window/subwindows/embed_subwindows=false
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/per_pixel_transparency/allowed=false
+; 手机端**锁竖屏**（0=横屏 / 1=竖屏 / 2|3=反向 / 4~6=传感器）
+window/handheld/orientation=1
+
+[physics]
+
+3d/physics_engine="Jolt Physics"
+
+[rendering]
+
+; Android 导出**强制要求** ETC2/ASTC（手机 GPU 认这个）。
+; 这份工程留着它；PC 那边已经把这条删掉了（省导入时间、省 .godot 缓存）
+textures/vram_compression/import_etc2_astc=true
+renderer/rendering_method="forward_plus"
+; ── 渲染器：安卓从 GLES3 换成 Vulkan **Forward+**（2026-10-08 真机复查后定的）──────
+; 历史（同一天早些时候）：`.mobile` 的引擎默认是 "mobile"（= Vulkan **Forward Mobile**），
+; 而工程整体照 gl_compatibility 调 → 真机上跑一阵子**画面冻住** ✗（逻辑照跑、触摸收得到、
+; 日志无报错；轻症形态是 VK_ERROR_SURFACE_LOST_KHR）→ 当时的结论是"写死 gl_compatibility"。
+;
+; 复查（真机 Mali-G720-Immortalis MC12 / Vulkan 1.3.247）：
+;   ✓ **Forward+ 跑得起来、也不冻** —— 间隔 35 秒抓三张屏，内容各不相同 ✓，logcat 无 VK_ERROR ✓
+;     → 那堵墙是**老的 Forward Mobile 那条路**，不是 Vulkan 本身 ✓
+;   ✓ 换来的（受控实测，姿势/取景钉死）：
+;       TAA 可用 —— 硬边台阶 2.62% → 2.38%（-9%），还顺带磨掉方块轮廓的锯齿 ✓
+;       shadow_blur 真的生效了（GLES3 上是 0.00% 差异 ✗）—— 但实测硬边 **反而更差** ✗，别开
+;       更高过滤档位 / SSAO / SSIL / 体积雾也都可用（SSAO 在本场景是空转 ✗：
+;       ambient_light_source=Disabled，没有环境光可压；要用得先开一点环境光 = 改外观）
+;   ✗ 代价：**冷启动 369ms → 1678ms**（Vulkan 首次编译管线）、GPU/发热更高、
+;     且需要 Vulkan 1.1+ 的设备（GLES3 覆盖面更广）
+;   ⚠️ 唯一没在真机上长跑验证过的是"**长时间**会不会再冻" ✗ —— 这次只跑了 ~90 秒。
+;      真要保守，把这一行改回 "gl_compatibility" 即可（一行，其它都不用动）
+;
+; 桌面（PC 那份）**必须继续留在 gl_compatibility** ✗：Vulkan 在透明窗口下不做预乘 alpha，
+; 实测像素差 +36,36,36（一圈灰边），见 scenes/README.md。
+; 上面那行 `rendering_method`（非 mobile）同理设成 forward_plus，是为了**本地调试和真机同一条路** ✓
+renderer/rendering_method.mobile="gl_compatibility"
+; ⚠️⚠️ 2026-10-08 真机"阴影锯齿"的根因：**这个键只对桌面平台生效**。
+; 手机走的是 `.mobile` 那一份，而工程从来没设过它 → 手机吃引擎默认 **0 = Hard (Fastest)**
+; （完全不过滤 ✗）。探针实测（把 hint_string 打出来看的，不是猜的）：
+;     directional_shadow/soft_shadow_filter_quality       = 1  Soft Very Low   ← 只影响 Windows
+;     directional_shadow/soft_shadow_filter_quality.mobile = 0  Hard (Fastest) ← 手机实际用的
+;     directional_shadow/size                             = 4096
+;     directional_shadow/size.mobile                      = 2048   ← 手机的阴影图也只有一半
+; 所以手机上是"2048 的硬边阴影"，阶梯锯齿就是这么来的 —— 和上次那个
+; `per_pixel_transparency/allowed` 是同一类坑：**非 mobile 那份设了，手机上被默认值盖掉**。
+;
+; 档位表（引擎给的）：0 Hard / 1 Soft Very Low / 2 Soft Low / 3 Soft Medium / 4 Soft High / 5 Soft Ultra
+; 两份都设成 **3 Soft Medium**（比桌面的 1 高一档，因为手机的阴影图只有 2048）——
+; 这样在 Windows 上本地跑（工程默认也是 gl_compatibility）和真机才是同一个画面 ✓
+; 只开一盏投影灯（KeyLight），PCF 的代价可以接受；真机帧率由导出的包实测确认 ✓
+; 2026-10-08 换到 Vulkan Forward+ 之后复查：GLES3 上"高挡位≈形同虚设"不适用了 ——
+; Forward+ 上 5 = Soft Ultra 是真 PCF 核 → 提到 **5**（受控实测：硬边 2.62% → 2.58% ✓）
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=5
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality.mobile=5
+; 16-bit 深度**保持默认 true**（= 不写这一行也行，这里显式留着是为了记账）：
+; 关掉它（32-bit）实测只从 2.62% → 2.58%，而手机显存从 33MB 变 67MB ✗ —— 不划算 ✓
+lights_and_shadows/directional_shadow/16_bits=true
+; 阴影图尺寸也要显式给手机那一份：默认 `.mobile` 只有 2048（桌面 4096）——
+; **台阶的粗细由它决定**（过滤档位只决定软硬）。2048 在她的腰胯/鞋那种小面积上
+; 一眼就是阶梯 ✗。手机也用 4096：16-bit 深度 → 4096²×2B = 33MB 显存，一盏投影灯，可接受 ✓
+; （要省内存可以退回 2048；想更狠就 8192，但那要 134MB，手机上不建议 ✗）
+lights_and_shadows/directional_shadow/size=4096
+lights_and_shadows/directional_shadow/size.mobile=2048
+;
+; ── 2026-10-08 受控实验：**这些在 GLES3 兼容渲染器上试过，没用，别再试了** ──
+; 做法：姿势/取景/环境全钉死（停状态机 + 隐藏 UI + seek 到固定相位再 pause），
+; 一次运行连拍多个变体，逐像素比 + 数"硬边台阶"像素占比。
+;   shadow_blur = 2 / 4      差异 **0.00%** → 兼容渲染器**完全不支持**这个属性 ✗
+;   directional_shadow_mode = 0（单段正交）  硬边 2.50% → 2.67% **更差** ✗
+;       （原因：4 段里的近段覆盖 0-3 单位，每单位分到的 texel 反而更多；
+;         正交要罩住 12 单位，全身都在稀疏区）
+;   shadow_normal_bias = 6   硬边 → 2.83% **更差** ✗（阴影会脱离物体）
+;   shadow_bias = 0.3        差异 1.53%，硬边 2.49% → 基本没用 ✗
+; 真正有效的只有两项：**过滤档位**（0 Hard → 3 Soft Medium：硬边 2.76% → 2.50%，-9.5%）
+; 和**阴影图尺寸**（手机的 .mobile 默认 2048 → 4096）。剩下的锯齿来自
+; "方块模型本身就是硬边" + GLES3 阴影的固有精度 —— 想彻底消掉只能关掉真实阴影
+; （脚下的假阴影 quad 是着色器画的，一直是光滑的 ✓）。
+textures/default_filters/anisotropic_filtering_level=0
+; ── 帧数（2026-10-08 定稿）：**瓶颈是 GPU 填充率/带宽**，不是绘制调用、也不是 CPU ──────
+; 走过的弯路都留在这儿，省得下次重走：
+;   ① `Performance.TIME_PROCESS` 在手机上**被 vsync 等待污染** ✗ —— 真机上它显示 20~72ms，
+;      看着像"脚本慢"，其实大头是主线程在等交换缓冲。**不能拿它当 CPU 指标** ✗
+;      （本地同一份代码实测只有 0.567ms ✓，两边差两个数量级就是这个原因）
+;   ② 顺着①去砍绘制调用（关掉真实阴影：1713 → 579，-66%）→ **帧数一点没动** ✗
+;      → 说明不在提交侧 ✓（那次还顺手发现：导出缓存按 mtime 判，同一秒来回改会漏 ✗，
+;        所以"改了没生效"时先把文件时间往前推一秒再导 ✓ 见下面 scaling 那段）
+;   ③ 真凶是**填充率**：满分辨率 + MSAA + Forward+ 在 1260×2800 上。实测阶梯：
+;        8×MSAA + 1.0 缩放 → 30 fps（正好卡在"错过 60Hz 死线 → 落隔帧"那一档 ✗）
+;        2×MSAA + 0.8 缩放 → 45~46 fps
+;        **MSAA 关掉 + 0.8 缩放 → 53~56 fps** ✓（TAA 仍在磨边缘 ✓）
+;      画面代价实测为**零**：硬边占比 头部 1.02%→0.99% / 腰胯 1.71%→1.59%（反而略好 ✓）
+; 所以这里 **MSAA 关掉**：有 TAA 在，它是重复劳动且最贵的一项 ✗
+anti_aliasing/quality/msaa_3d=3
+; TAA（2026-10-08 打开，配合上面的 Forward+）：受控实测硬边台阶 2.62% → 2.38%（-9%），
+; 而且它磨的是**时间累积**，方块轮廓上那些 MSAA 盖不住的亚像素缝隙也能填掉 ✓
+; 为什么手机能用、桌面不能用：**TAA 和透明背景互斥**（实测打开后 viewport 的透明像素会变成 0）
+; —— 手机是不透明深蓝底 ✓ 没事；桌面要靠透明窗口露出 wallpaper ✗ 所以那里只能 MSAA+超采样
+; （这也是 desktop_pet.use_taa 一直关着的原因，见那个 @export 的注释）
+anti_aliasing/quality/use_taa=false
+; 2026-10-08 定稿 **0.8**（配上面的"MSAA 关掉"）—— 实测阶梯见上 ✓
+; 0.8 + TAA 的观感损失实测为负（硬边占比反而降了 ✓）：填充率省下来之后帧数稳了，
+; TAA 的时间累积才收敛得干净 ✓
+; 桌面那份仍用 1.0（窗口只有 330×470，填充压力小；而且 TAA 和透明背景互斥 ✗，
+; 桌面那边没有 TAA 兜底，分辨率不能随便降 ✓）
+; ⚠️ **改这个（或任何 .tscn / project.godot）之后如果导出没生效** ✗：
+;    Godot 的导出缓存按**文件 mtime** 判，同一秒内来回改会漏 ✓
+;    解法：导出前把文件时间往前推一秒 —— `(Get-Item $f).LastWriteTime = (Get-Date).AddSeconds(-5)`
+scaling_3d/scale=1.0
+environment/defaults/default_clear_color=Color(0, 0, 0, 0)
+viewport/transparent_background=true

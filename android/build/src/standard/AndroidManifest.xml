@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 阶段 5c（2026-10-09）：接收系统分享（ACTION_SEND / image/*）的入口。
+
+     这份文件为什么放在 **flavor 源集**（`src/standard/`）而不是 main / debug 里 ✗ ——
+     这两条都是实测撞出来的，代价不小，别再改回去：
+
+       ① Godot 导出时会**重新生成** `src/main/AndroidManifest.xml` 与
+          `src/debug/AndroidManifest.xml` ✗ —— 手写进去的 `<intent-filter>`
+          下一次导出就没了（实测：debug 那份被整个重写，我加的那条直接消失 ✓）。
+          而 `src/standard/` 这种**自定义叠加源** Godot 不碰 ✓，能长期存活 ✓。
+
+       ② 就算写在能存活的地方，**也不能往 `.GodotAppLauncher` 里塞** ✗：
+          Godot 生成的那份 debug 清单给它标了
+              tools:node="mergeOnlyAttributes"
+          意思是"这个 alias 只合并属性、**子元素一律丢掉**" ✗ ——
+          清单合并报告里会明写 REJECTED，APK 里自然没有，
+          于是系统"找不到能收分享的应用"（`am start` 报 unable to resolve ✓）。
+          ⚠️ 叠加源的优先级低于 buildType ✗，你这边写 merge 也压不过它 ✓。
+
+     → 所以这里声明一个**新名字**的 activity-alias ✓（`.PetShareTarget`）：
+       合并器遇到"主清单里没有的组件"就是 ADD ✓，不存在上面那层冲突 ✓。
+       它 targetActivity 指向 `.GodotApp` 就够了 ✓ —— 别名本身的 exported 才决定
+       外部能不能送 intent 进来 ✓（Godot 自己的启动别名也是这么指向那个
+       exported=false 的 activity 的 ✓）。
+
+     ⚠️ 别把它改名成 `.GodotAppLauncher` ✗（那会立刻掉进上面第 ② 条 ✓）
+
+     ⚠️ 阶段 13（2026-10-10）：**新加的 `res/`（字符串、无障碍能力 xml）也放这个源集** ✗→✓，
+     即 `src/standard/res/` ✓ —— 理由同第 ① 条（main / debug 会被重写 ✓）。
+     放这儿 Godot 不碰 ✓，AGP 会当成 standard flavor 的资源一起打进包 ✓（见 PetShotA11y 那个 <service> ✓）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 阶段 9（2026-10-09）：后台保活的权限 ✓
+         ⚠️ FOREGROUND_SERVICE_MEDIA_PLAYBACK 这条是**必须**的 ✗ ——
+         targetSdk 36（安卓 14+ 的规矩）：声明了 foregroundServiceType 就得配上对应权限 ✓，
+         少这条 = 一调 startForeground 就崩 ✓（而且是在"退到后台"那一刻才崩 ✗，特别难查 ✓） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- 安卓 13+ 通知要用户点头才显示 ✓（运行时申请，见 pet_mobile._request_notify_permission ✓） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 阶段 10：悬浮球要"显示在其他应用上层" ✓ —— 这个权限**必须用户单独去系统里点允许** ✗
+         （不是运行时弹框那种 ✓，得拉起 `ACTION_MANAGE_OVERLAY_PERMISSION` 那个页面 ✓），
+         见 PetOverlay.request / PetBridge.requestOverlayPermission ✓ -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- 阶段 11（2026-10-10）：双击她 → 截一张屏给她看 ✓
+         ⚠️ 安卓 14+ 的规矩（两条，少一条都不行 ✗，而且都是"用户点完允许之后才炸" ✗）：
+           ① 声明 FOREGROUND_SERVICE_MEDIA_PROJECTION ✓；
+           ② **取 MediaProjection 之前**必须已有 mediaProjection 类型的前台服务在跑 ✓
+              —— 所以那个服务是"先 startForeground、再 getMediaProjection" ✓✓
+              （见 PetShotService.onStartCommand，顺序反了就是 SecurityException ✓） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <!-- 阶段 9b 收尾（2026-10-11）：**电池优化白名单** ✓
+         ⚠️ 普通权限（装的时候就给 ✓），配 `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+         那个对话框用 ✓（见 PetBridge.requestIgnoreBatteryOptimizations ✓）。
+         定位是"让她一直在"的**第二道保险** ✓ —— 前排前台服务已经解了 freezer 那件事 ✓，
+         这条是防国产 ROM 的省电策略再顺手按她 ✓（用户不想给也不影响功能 ✓）。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application>
+        <!-- 阶段 9：她退到后台时按住进程的那个前台服务 ✓（见 PetService.java 头部说明 ✓）
+             `exported=false`：只准我们自己拉 ✓（外面没理由启它 ✓） -->
+        <service
+            android:name=".PetService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- 阶段 11：截一次屏的那个前台服务 ✓（只活一秒，见 PetShotService 头部 ✓）。
+             ⚠️ `foregroundServiceType="mediaProjection"` **一个字都不能错** ✗ ——
+             类型不对时 getMediaProjection 直接 SecurityException ✓ -->
+        <service
+            android:name=".PetShotService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- 阶段 9b：到点"喊一声"的那个 Job ✓ —— 用 JobScheduler 而不是 AlarmManager ✗：
+             后台应用会被 app freezer 冻住，而被冻结的应用**闹钟不投** ✗（真机实测 Reason=frozen ✓）；
+             Job 则会把冻结的应用唤醒 ✓✓。详见 PetNudgeJobService 头部。
+             ⚠️ 这行 `android:permission="...BIND_JOB_SERVICE"` 是**必须**的 ✗ ——
+             少了它，JobScheduler 会直接拒绝调度（而且报错很不显眼 ✗）。 -->
+        <service
+            android:name=".PetNudgeJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- 阶段 13（2026-10-10，用户报的："每次截图都要申请权限、不够方便" ✓）：
+             **无障碍免授权截屏** ✓（`PetShotA11y.java` ✓）。
+             开了它之后双击她不再每次弹 `MediaProjection` 那个"允许截屏吗" ✓
+             （那条授权安卓 14+ 是**每次会话一次、存不住** ✗，绕不过去 ✓）。
+
+             ⚠️ 三处都不能少 ✗：
+               ① `android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"` ✓
+                  —— 只有系统能绑它（少了它任何应用都能连我们的服务 ✗）；
+               ② `<intent-filter>` 里那个 action ✓ —— 系统就是按它来找无障碍服务的 ✓；
+               ③ `<meta-data android:name="android.accessibilityservice">` 指到
+                  `@xml/pet_accessibility` ✓ —— 能力（`canTakeScreenshots` ✓）在那边 ✓。
+             ⚠️ `exported="true"` 是**必须**的 ✗：系统在**别的进程**里绑我们 ✓，
+                 设成 false 就绑不上、开关打开了也不生效 ✓（别"顺手收紧" ✗）。
+             ⚠️ `android:label` 就是用户在系统「设置 → 无障碍」里看到的**名字** ✓（见 res/values/strings.xml ✓）。
+             ⚠️ 这两份 res 必须放在**flavor 源集** `src/standard/res/` ✗ ——
+                 理由和本文件一样：Godot 会重写 main / debug ✓（见文件头那段铁律 ✓）。 -->
+        <service
+            android:name=".PetShotA11y"
+            android:exported="true"
+            android:label="@string/pet_a11y_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/pet_accessibility" />
+        </service>
+
+        <!-- 喊一声的"干活"部分（取一句台词 + 发通知 ✓）。
+             现在由上面那个 Job 调它 ✓；留着 receiver 是为了以后想手动/别的方式触发 ✓。 -->
+        <receiver
+            android:name=".PetNotifyReceiver"
+            android:exported="false" />
+
+        <!-- 阶段⑤（2026-10-11，用户要的）：**桌面小组件** ✓（见 PetWidget.java ✓）。
+             用户长按桌面 → "小组件" → 找到「她的一句话」加一块到桌面 ✓。
+
+             ⚠️ 三处都不能少 ✗：
+               ① `<intent-filter>` 里 `APPWIDGET_UPDATE` 那个 action ✓ ——
+                  系统就是按它把"该刷新了"的广播送进来的 ✓（半小时一次的兜底刷新也走它 ✓）；
+               ② `<meta-data android:name="android.appwidget.provider">` 指到
+                  `@xml/pet_widget_info` ✓ —— 几格、多大、哪张 layout，全在那边 ✓；
+               ③ `android:exported="false"` ✓ —— 只准系统发广播给我们 ✓
+                  （外面没理由替我们刷 ✓；而且 AppWidget 的更新**不要求** exported ✓）。
+             ⚠️ 这个 receiver 和那三个 res 一样，必须放在 **flavor 源集**（本文件 ✓）——
+                 理由同文件头第 ① 条：Godot 导出时会重写 main / debug 的清单 ✗。 -->
+        <receiver
+            android:name=".PetWidget"
+            android:exported="false"
+            android:label="@string/pet_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/pet_widget_info" />
+        </receiver>
+
+        <activity-alias
+            android:name=".PetShareTarget"
+            android:targetActivity=".GodotApp"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity-alias>
+    </application>
+
+</manifest>

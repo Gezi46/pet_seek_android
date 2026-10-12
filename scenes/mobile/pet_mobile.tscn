@@ -1,0 +1,139 @@
+[gd_scene format=3]
+
+; 手机端入口场景（阶段 1 第 2 步）。结构和桌面那份 pet.tscn **刻意保持一致**
+; （Character/Pivot/Model + 正交相机 + 两盏灯 + 脚下阴影），差别只有三处：
+;   1. 不挂 desktop_pet.gd，挂 scripts/mobile/pet_mobile.gd
+;   2. 环境是**不透明**的（手机不需要透明窗口；悬浮窗那块是原生画的）
+;   3. 没有右键菜单；气泡挪到底部（阶段 3 的 galgame 版式从这里长）
+
+[ext_resource type="Script" path="res://scripts/mobile/pet_mobile.gd" id="1_mob"]
+[ext_resource type="PackedScene" uid="uid://c15oea04d7i3" path="res://peekdeek_opt.glb" id="2_glb"]
+
+[sub_resource type="Environment" id="Env_mobile"]
+background_mode = 1
+background_color = Color(0.09, 0.11, 0.16, 1)
+; ⚠️ 2026-10-08 真机报"光影太白"：桌面那份的真正来源是**相机上挂的 Environment**
+; （ambient_light_color=(0,0,0,0)，它会整个盖掉 WorldEnvironment）—— 所以桌面上
+; 环境光是零、色调映射是默认的线性。这份场景当初照抄了 WorldEnvironment 的数值，
+; 却漏了相机那一手 → 吃到 ambient_light_energy=0.85 + Filmic，整只发白。
+; 这里直接把 WorldEnvironment 调成和桌面等效：环境光关掉 + 线性色调映射。
+; 手机不透明，所以背景保留这块深蓝（桌面那边是靠透明窗口露出桌面的）
+ambient_light_source = 1
+tonemap_mode = 0
+
+[sub_resource type="Shader" id="Shader_soft"]
+code = "
+shader_type spatial;
+render_mode blend_mix, depth_draw_never, cull_disabled, unshaded, shadows_disabled;
+uniform float strength : hint_range(0.0, 1.0) = 0.5;
+void fragment() {
+	float d = length(UV - vec2(0.5)) * 2.0;
+	float a = smoothstep(1.0, 0.05, d);
+	ALBEDO = vec3(0.0);
+	ALPHA = a * strength;
+}
+"
+
+[sub_resource type="ShaderMaterial" id="Mat_shadow"]
+render_priority = 0
+shader = SubResource("Shader_soft")
+shader_parameter/strength = 0.5
+
+[sub_resource type="QuadMesh" id="Quad_shadow"]
+size = Vector2(1.6, 1.6)
+
+[sub_resource type="StyleBoxFlat" id="Box_bubble"]
+content_margin_left = 12.0
+content_margin_top = 10.0
+content_margin_right = 12.0
+content_margin_bottom = 10.0
+bg_color = Color(1, 1, 1, 0.94)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.55, 0.68, 0.92, 0.95)
+corner_radius_top_left = 12
+corner_radius_top_right = 12
+corner_radius_bottom_right = 12
+corner_radius_bottom_left = 12
+
+[node name="PetMobile" type="Node3D"]
+script = ExtResource("1_mob")
+
+[node name="Character" type="Node3D" parent="."]
+
+[node name="Pivot" type="Node3D" parent="Character"]
+
+[node name="Model" parent="Character/Pivot" instance=ExtResource("2_glb")]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.99997044, 0.0076920823, 0, -0.0076920823, 0.99997044, 0, 0.7, 6.5)
+projection = 1
+size = 3.2
+far = 100.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_mobile")
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.8480481, -0.32625088, 0.4175821, 0, 0.7880108, 0.6156615, -0.52991927, -0.5221106, 0.668271, 0, 0, 0)
+light_color = Color(1, 0.97, 0.92, 1)
+light_energy = 1.15
+shadow_enabled = true
+; ⚠️ 2026-10-08 阴影锯齿（第二条）：默认是 PSSM **4 段**，段 0 只覆盖 max_distance 的 10%
+; （=1.2 单位），而她的身体高 2.7 —— 于是身体横跨 3 段，段与段之间又是**硬切换**
+; （directional_shadow_blend_splits 默认 false）→ 身上能看见一条分界线。
+; 改成：段 0 覆盖 25%（=3 单位，正好把她整个罩住，每单位分到的 texel 更多）+ 打开混段 ✓
+; 2026-10-08 又在 Forward+ 上做了一轮受控对照，两处按实测再收一收：
+;   max_distance 12 → **8**：同一张阴影图罩更小的范围 → texel 更密（硬边 2.48% → 2.24% ✓；
+;       她总高 2.7，8 单位足够；调这个要连着 split_1 一起看）
+;   split_1 0.25 → **0.2**（段 0 = 1.6 单位，还是罩得住）+ 混段保持开 ✓
+;   split_1 试过 0.4（段 0 = 3.2 单位）**更差** ✗（硬边 2.45%）—— 段 0 不是越大越好
+;   shadow_opacity 试过 **0.6**（硬边 2.48% → 2.26% ✓，但那是靠"把阴影调淡"换来的 ——
+;       真机上用户反馈"对比度确实有点低" ✗）→ **改回 1.0（默认，不写这一行）**：
+;       硬边交给 TAA + 过滤 5 去压 ✓，不拿对比度去换 ✓
+directional_shadow_max_distance = 8.0
+directional_shadow_split_1 = 0.2
+directional_shadow_blend_splits = true
+
+[node name="FillLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.61566144, 0.19063707, -0.7646035, 0, 0.9702957, 0.2419219, 0.7880108, 0.148942, -0.59737366, 0, 0, 0)
+light_color = Color(0.78, 0.86, 1, 1)
+light_energy = 0.35
+
+[node name="Shadow" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, -4.371139e-08, 1, 0, -1, -4.371139e-08, 0, 0.006, 0)
+material_override = SubResource("Mat_shadow")
+mesh = SubResource("Quad_shadow")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Anchor" type="Control" parent="UI"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+; 气泡放在**底部**（手机上的习惯位置），尺寸按设计分辨率 450×800 来写。
+; 阶段 3 会在这条基线往上长出「一问一答的选项条」（galgame 那种）
+[node name="Bubble" type="Label" parent="UI/Anchor"]
+visible = false
+layout_mode = 0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -168.0
+offset_right = -16.0
+offset_bottom = -28.0
+theme_override_colors/font_color = Color(0.1, 0.12, 0.2, 1)
+theme_override_colors/font_outline_color = Color(1, 1, 1, 0.9)
+theme_override_constants/outline_size = 4
+theme_override_font_sizes/font_size = 20
+theme_override_styles/normal = SubResource("Box_bubble")
+vertical_alignment = 2
+autowrap_mode = 3

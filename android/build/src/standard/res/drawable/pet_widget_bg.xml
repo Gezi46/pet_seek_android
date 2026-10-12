@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 阶段⑤（2026-10-11）：小组件的底板 ✓
+     圆角深色板 + 一圈淡描边 ✓ —— 跟悬浮球那个面板同一个配色 ✓（#F01A2430 / #66FFFFFF ✓）。
+     ⚠️ 别用图片背景 ✗：RemoteViews 换不了 layer-list 以外太花的东西 ✓，
+     而 shape 这种"系统自己画"的在任何桌面壁纸上都压得住 ✓ -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="16dp" />
+    <solid android:color="#F01A2430" />
+    <stroke
+        android:width="1dp"
+        android:color="#66FFFFFF" />
+</shape>
