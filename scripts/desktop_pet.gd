@@ -1966,9 +1966,29 @@ func _open_ai_settings() -> void:
 func _on_ai_panel_closed() -> void:
 	_set_chat_focus(false)
 
+## ⚠️ "空密钥**连按两次**才真清"的那一步（2026-10-12："换模型 apikey 丢失" ✓）。
+## 空 key **不等于**要删 key ✗：面板切到不要鉴权的本地后端时，密钥栏天然是空的 ✓，
+## 老代码照单全收 ✗ → 空串一路走到 `_save_chat_config` → `PetSecret.store("", "")`
+## 会把 `user://pet_secret.dat` **整个删掉** ✗✗ —— 再换回官方 API，那把付费 key
+## 已经不在机器上了 ✓（用户看到的就是"丢了" ✓）。
+## 现在：第一次空着保存 → 原来的 key **留着** + 跟主人说一句 ✓；连着第二次 → 才真清 ✓
+var _key_clear_pending := false
+
 func _on_ai_settings_saved(d: Dictionary) -> void:
 	chat_url = String(d.get("url", chat_url))
-	chat_access_key = String(d.get("key", chat_access_key))
+	var typed := String(d.get("key", chat_access_key)).strip_edges()
+	if typed != "":
+		chat_access_key = typed
+		_key_clear_pending = false
+	elif chat_access_key.strip_edges() == "":
+		_key_clear_pending = false      # 本来就没配过 ✓ 没什么可清的 ✓
+	elif _key_clear_pending:
+		chat_access_key = ""            # 说第二遍了 = 真不要了 ✓
+		_key_clear_pending = false
+		_say("那把密钥我清掉了 ✓")
+	else:
+		_key_clear_pending = true
+		_say("密钥栏是空的 —— 你原来那把 key 我先留着 ✓；真想清掉就再按一次保存 ✓")
 	chat_model = String(d.get("model", chat_model))
 	vision_url = String(d.get("vision_url", vision_url))
 	vision_model = String(d.get("vision_model", vision_model))

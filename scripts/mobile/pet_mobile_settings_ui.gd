@@ -34,6 +34,12 @@ var _panel: VBoxContainer = null
 var _url: LineEdit = null
 var _model: LineEdit = null
 var _key: LineEdit = null
+## ⚠️ "空密钥**连按两次**才真清"的那一步（2026-10-12："换模型 apikey 丢失" ✓）。
+## 手机上这一栏的提示语就是"留空 = 只当本地桌宠" ✓，所以留空**是合法意图** ✓ ——
+## 可它和"手滑清掉了"长得一模一样 ✗，而 `_write_secret("")` 会直接把密钥文件删掉 ✓，
+## 于是"改完模型再改回来，key 就没了" ✓。规矩（和桌面面板一致 ✓）：
+## 空着保存**第一次** = 先留着 + 说明白 ✓；连着**第二次** = 才是真不要了 ✓
+var _key_clear_pending := false
 var _vision: LineEdit = null
 var _haptic: CheckButton = null
 var _overlay: CheckButton = null        # 阶段 10：悬浮球 ✓
@@ -362,6 +368,7 @@ func _sync_from_settings() -> void:
 	var s = _host._settings
 	if s == null:
 		return
+	_key_clear_pending = false     # 上一轮那个"要清空"的意图不跨次保留 ✓（和桌面面板同一条规矩 ✓）
 	_url.text = String(s.chat_url)
 	_model.text = String(s.chat_model)
 	_key.text = String(s.chat_access_key)
@@ -385,7 +392,19 @@ func _save() -> void:
 		return
 	s.chat_url = _url.text.strip_edges()
 	s.chat_model = _model.text.strip_edges()
-	s.chat_access_key = _key.text.strip_edges()
+	# ⚠️ **空 key ≠ 要删 key** ✗（"换模型 apikey 丢失"这条的规矩 ✓）：
+	#   这一栏的提示语就是"留空 = 只当本地桌宠" ✓ —— 留空**是合法意图** ✓，
+	#   可它和"手滑清掉了"长得一模一样 ✗，而 `_write_secret("")` 会直接把那个密钥文件
+	#   remove 掉 ✓，再也回不来 ✓（真机上就表现成"改完模型 key 就没了" ✓）。
+	#   规矩（和桌面面板一致）：空着保存**第一次**先留着 + 说明白 ✓；连着**第二次**才真清 ✓
+	var typed_key := _key.text.strip_edges()
+	if typed_key == "" and String(s.chat_access_key).strip_edges() != "" and not _key_clear_pending:
+		_key_clear_pending = true
+		_msg.text = "密钥栏是空的：你原来那把 key 我先留着 ✓ —— 真想清掉，就再按一次「保存」✓"
+		return
+	# 走到这儿就照栏位写 ✓（要么是"第二次确认" ✓、要么本来就没 key ✓）
+	_key_clear_pending = false
+	s.chat_access_key = typed_key
 	s.vision_model = _vision.text.strip_edges()
 	s.haptic = _haptic.button_pressed
 	s.overlay = _overlay.button_pressed
